@@ -10,11 +10,10 @@ pub use heap_::*;
 pub use stack_::*;
 
 pub trait ArenaAllocatorImpl {
-    fn allocate(&self, layout: Layout) -> AllocRes<NonNull<[u8]>>;
-    fn deallocate(&self, data: NonNull<u8>, layout: Layout);
-
-    fn alloc_zeroed(&self, layout: Layout) -> AllocRes<NonNull<[u8]>> {
-        let buf_ptr = self.allocate(layout)?;
+    fn bump_alloc(&self, layout: Layout) -> AllocRes<NonNull<[u8]>>;
+    fn dealloc(&self, data: NonNull<u8>, layout: Layout);
+    fn bump_alloc_zeroed(&self, layout: Layout) -> AllocRes<NonNull<[u8]>> {
+        let buf_ptr = self.bump_alloc(layout)?;
         let thin = buf_ptr.as_mut_ptr();
 
         unsafe {
@@ -26,7 +25,7 @@ pub trait ArenaAllocatorImpl {
 
     #[allow(clippy::mut_from_ref)]
     fn alloc_val<T>(&self, value: T) -> AllocRes<&mut T> {
-        let space = self.allocate(Layout::new::<T>())?;
+        let space = self.bump_alloc(Layout::new::<T>())?;
         let thin = space.as_mut_ptr() as *mut T;
         unsafe { ptr::write(thin, value) };
         Ok(unsafe { &mut *thin })
@@ -39,7 +38,7 @@ pub(crate) struct ArenaAllocator<B: Buffer<u8>> {
 }
 
 impl<B: Buffer<u8>> ArenaAllocatorImpl for ArenaAllocator<B> {
-    fn allocate(&self, layout: Layout) -> AllocRes<NonNull<[u8]>> {
+    fn bump_alloc(&self, layout: Layout) -> AllocRes<NonNull<[u8]>> {
         let idx = loop {
             let cur = self.next_free.load(Ordering::Acquire);
             if layout.size() > self.buf.len() - cur {
@@ -66,7 +65,7 @@ impl<B: Buffer<u8>> ArenaAllocatorImpl for ArenaAllocator<B> {
         NonNull::new(buffer).ok_or(AllocError::new(AllocErrorKind::InvalidPtr))
     }
 
-    fn deallocate(&self, data: NonNull<u8>, layout: Layout) {
+    fn dealloc(&self, data: NonNull<u8>, layout: Layout) {
         let cur = self.next_free.load(Ordering::Acquire);
         if layout.size() > cur {
             return;
@@ -98,40 +97,50 @@ mod heap_ {
 
     use super::*;
 
-    macro_rules! std_allocator_impl {
-        (@impl [$($impl_generics:tt)*] $ty:ty) => {
-            unsafe impl<$($impl_generics)*> ::alloc::alloc::Allocator for $ty {
-                fn allocate(&self, layout: ::core::alloc::Layout) -> Result<NonNull<[u8]>, ::alloc::alloc::AllocError> {
-                    $crate::ArenaAllocatorImpl::allocate(self, layout).map_err(|e| e.into())
+    #[cfg(feature = "allocator_api")]
+    mod alloc_api_ {
+        use super::*;
+
+        #[macro_export]
+        macro_rules! std_allocator_impl {
+            (@impl [$($impl_generics:tt)*] $ty:ty) => {
+                unsafe impl<$($impl_generics)*> ::alloc::alloc::Allocator for $ty {
+                    fn allocate(&self, layout: ::core::alloc::Layout) -> Result<NonNull<[u8]>, ::alloc::alloc::AllocError> {
+                        $crate::ArenaAllocatorImpl::bump_alloc(self, layout).map_err(|e| e.into())
+                    }
+
+                    unsafe fn deallocate(&self, ptr: ::core::ptr::NonNull<u8>, layout: ::core::alloc::Layout) {
+                        $crate::ArenaAllocatorImpl::dealloc(self, ptr, layout);
+                    }
+
+                    fn allocate_zeroed(&self, layout: ::core::alloc::Layout) -> Result<::core::ptr::NonNull<[u8]>, ::alloc::alloc::AllocError> {
+                        $crate::ArenaAllocatorImpl::bump_alloc_zeroed(self, layout).map_err(|e| e.into())
+                    }
                 }
+            };
 
-                unsafe fn deallocate(&self, ptr: ::core::ptr::NonNull<u8>, layout: ::core::alloc::Layout) {
-                    $crate::ArenaAllocatorImpl::deallocate(self, ptr, layout);
-                }
-            }
-        };
+            ($ty:ty) => {
+                std_allocator_impl!(@impl [] $ty);
+            };
 
-        ($ty:ty) => {
-            std_allocator_impl!(@impl [] $ty);
-        };
+            ($ty:ty where [$($generics:tt)*]) => {
+                std_allocator_impl!(@impl [$($generics)*] $ty);
+            };
+        }
 
-        ($ty:ty where [$($generics:tt)*]) => {
-            std_allocator_impl!(@impl [$($generics)*] $ty);
-        };
+        std_allocator_impl!(HeapAllocator);
+        std_allocator_impl!(StackAllocator<N> where [const N: usize]);
     }
-
-    std_allocator_impl!(HeapAllocator);
-    std_allocator_impl!(StackAllocator<N> where [const N: usize]);
 
     pub struct HeapAllocator(ArenaAllocator<HeapBuf<u8>>);
 
     impl ArenaAllocatorImpl for HeapAllocator {
-        fn allocate(&self, layout: Layout) -> AllocRes<NonNull<[u8]>> {
-            ArenaAllocatorImpl::allocate(&self.0, layout)
+        fn bump_alloc(&self, layout: Layout) -> AllocRes<NonNull<[u8]>> {
+            ArenaAllocatorImpl::bump_alloc(&self.0, layout)
         }
 
-        fn deallocate(&self, data: NonNull<u8>, layout: Layout) {
-            ArenaAllocatorImpl::deallocate(&self.0, data, layout);
+        fn dealloc(&self, data: NonNull<u8>, layout: Layout) {
+            ArenaAllocatorImpl::dealloc(&self.0, data, layout);
         }
     }
 
@@ -150,12 +159,12 @@ mod stack_ {
     pub struct StackAllocator<const N: usize>(ArenaAllocator<StackBuf<N, u8>>);
 
     impl<const N: usize> ArenaAllocatorImpl for StackAllocator<N> {
-        fn allocate(&self, layout: Layout) -> AllocRes<NonNull<[u8]>> {
-            self.0.allocate(layout)
+        fn bump_alloc(&self, layout: Layout) -> AllocRes<NonNull<[u8]>> {
+            self.0.bump_alloc(layout)
         }
 
-        fn deallocate(&self, data: NonNull<u8>, layout: Layout) {
-            self.0.deallocate(data, layout)
+        fn dealloc(&self, data: NonNull<u8>, layout: Layout) {
+            self.0.dealloc(data, layout)
         }
     }
 

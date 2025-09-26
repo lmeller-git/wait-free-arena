@@ -1,13 +1,15 @@
 #![no_std]
-#![feature(unsafe_cell_access, allocator_api, slice_ptr_get)]
+#![feature(unsafe_cell_access, slice_ptr_get)]
+#![cfg_attr(feature = "allocator_api", feature(allocator_api))]
 
-#[cfg(any(feature = "std", test))]
+#[cfg(feature = "std")]
 extern crate std;
 
-#[cfg(any(feature = "alloc", test))]
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 mod allocator;
+#[cfg(feature = "boxed")]
 pub mod boxed;
 mod buffer;
 mod util;

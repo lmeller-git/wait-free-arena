@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["std"]
+default = ["std", "boxed", "allocator_api"]
 std = ["alloc"]
 alloc = []
+allocator_api = ["alloc"]
+boxed = []
 
 [dependencies]
 cfg-if = "1.0.3"
