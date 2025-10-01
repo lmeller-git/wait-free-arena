@@ -49,25 +49,37 @@ impl<const N: usize, T: Default> Default for StackBuf<N, T> {
 mod heap_ {
     use super::*;
     use alloc::boxed::Box;
+    use core::ptr::NonNull;
 
     pub(crate) struct HeapBuf<T> {
-        inner: UnsafeCell<Box<[T]>>,
+        ptr: NonNull<[T]>,
+        cap: usize,
     }
 
     impl<T> Buffer<T> for HeapBuf<T> {
         fn as_ptr(&self) -> *const T {
-            self.inner.get() as *const T
+            self.as_mut_ptr()
         }
 
         fn as_mut_ptr(&self) -> *mut T {
-            self.inner.get() as *mut T
+            self.ptr.as_ptr() as *mut T
+        }
+
+        fn as_slice(&self) -> &[T] {
+            unsafe { &*ptr::slice_from_raw_parts(self.as_ptr(), self.len()) }
+        }
+
+        fn len(&self) -> usize {
+            self.cap
         }
     }
 
     impl<T: Default> HeapBuf<T> {
         pub(crate) fn new(size: usize) -> Self {
+            let heap_alloc = (0..size).map(|_| T::default()).collect::<Box<[T]>>();
             Self {
-                inner: (0..size).map(|_| T::default()).collect::<Box<[T]>>().into(),
+                ptr: NonNull::new(Box::into_raw(heap_alloc)).unwrap(),
+                cap: size,
             }
         }
     }

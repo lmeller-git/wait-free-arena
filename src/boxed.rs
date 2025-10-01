@@ -21,7 +21,7 @@ impl<'a, T> Box<'a, T> {
         Self::new_in(value, alloc).map(|boxed| boxed.into())
     }
 
-    pub fn into_inner(b: Box<'_, T>) -> T {
+    pub fn into_inner(b: Box<'a, T>) -> T {
         let raw = Self::into_raw(b);
         unsafe { ptr::read(raw) }
     }
@@ -32,12 +32,12 @@ impl<'a, T: ?Sized> Box<'a, T> {
         Self(unsafe { &mut *ptr })
     }
 
-    pub fn into_raw(b: Box<'_, T>) -> *mut T {
+    pub fn into_raw(b: Box<'a, T>) -> *mut T {
         let mut b = ManuallyDrop::new(b);
         b.deref_mut().0 as *mut T
     }
 
-    pub fn leak(b: Box<'_, T>) -> &'a mut T {
+    pub fn leak(b: Box<'a, T>) -> &'a mut T {
         unsafe { &mut *Self::into_raw(b) }
     }
 }
@@ -173,6 +173,15 @@ impl<'a, T, const N: usize> TryFrom<Box<'a, [T]>> for Box<'a, [T; N]> {
             Ok(unsafe { Box::from_raw(ptr) })
         } else {
             Err(slice)
+        }
+    }
+}
+
+impl<'a, T: ?Sized> Drop for Box<'a, T> {
+    fn drop(&mut self) {
+        unsafe {
+            // `Box` owns value of `T`, but not memory behind it.
+            core::ptr::drop_in_place(self.0);
         }
     }
 }

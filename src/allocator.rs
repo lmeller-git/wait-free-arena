@@ -3,6 +3,7 @@ use core::{
     ptr::{self, NonNull},
     sync::atomic::{AtomicUsize, Ordering},
 };
+use std::println;
 
 use crate::{AllocError, AllocErrorKind, AllocRes, buffer::Buffer};
 #[cfg(feature = "alloc")]
@@ -12,6 +13,7 @@ pub use stack_::*;
 pub trait ArenaAllocatorImpl {
     fn bump_alloc(&self, layout: Layout) -> AllocRes<NonNull<[u8]>>;
     fn dealloc(&self, data: NonNull<u8>, layout: Layout);
+    fn reset(&mut self) -> AllocRes<()>;
     fn bump_alloc_zeroed(&self, layout: Layout) -> AllocRes<NonNull<[u8]>> {
         let buf_ptr = self.bump_alloc(layout)?;
         let thin = buf_ptr.as_mut_ptr();
@@ -57,7 +59,7 @@ impl<B: Buffer<u8>> ArenaAllocatorImpl for ArenaAllocator<B> {
                 break current;
             }
         };
-
+        println!("al: {}, s:{}", layout.align(), layout.size());
         let buffer = self.buf.as_mut_ptr();
         let buffer = unsafe { buffer.add(idx) };
         let buffer = ptr::slice_from_raw_parts_mut(buffer, layout.size());
@@ -79,6 +81,11 @@ impl<B: Buffer<u8>> ArenaAllocatorImpl for ArenaAllocator<B> {
                 .next_free
                 .compare_exchange(cur, last, Ordering::AcqRel, Ordering::Relaxed);
         }
+    }
+
+    fn reset(&mut self) -> AllocRes<()> {
+        self.next_free.store(0, Ordering::Release);
+        Ok(())
     }
 }
 
@@ -142,6 +149,10 @@ mod heap_ {
         fn dealloc(&self, data: NonNull<u8>, layout: Layout) {
             ArenaAllocatorImpl::dealloc(&self.0, data, layout);
         }
+
+        fn reset(&mut self) -> AllocRes<()> {
+            self.0.reset()
+        }
     }
 
     impl HeapAllocator {
@@ -165,6 +176,10 @@ mod stack_ {
 
         fn dealloc(&self, data: NonNull<u8>, layout: Layout) {
             self.0.dealloc(data, layout)
+        }
+
+        fn reset(&mut self) -> AllocRes<()> {
+            self.0.reset()
         }
     }
 
