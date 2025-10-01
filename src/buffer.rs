@@ -49,11 +49,10 @@ impl<const N: usize, T: Default> Default for StackBuf<N, T> {
 mod heap_ {
     use super::*;
     use alloc::boxed::Box;
-    use core::ptr::NonNull;
+    use core::{alloc::Layout, ptr::NonNull};
 
     pub(crate) struct HeapBuf<T> {
         ptr: NonNull<[T]>,
-        cap: usize,
     }
 
     impl<T> Buffer<T> for HeapBuf<T> {
@@ -70,7 +69,7 @@ mod heap_ {
         }
 
         fn len(&self) -> usize {
-            self.cap
+            self.ptr.len()
         }
     }
 
@@ -79,8 +78,20 @@ mod heap_ {
             let heap_alloc = (0..size).map(|_| T::default()).collect::<Box<[T]>>();
             Self {
                 ptr: NonNull::new(Box::into_raw(heap_alloc)).unwrap(),
-                cap: size,
             }
+        }
+    }
+
+    #[cfg(feature = "memory_reuse")]
+    impl<T> Drop for HeapBuf<T> {
+        /// THIS DOES NO CALL DROP BUT ONLY FREES THE UNDERLYING MEMORY
+        fn drop(&mut self) {
+            unsafe {
+                alloc::alloc::dealloc(
+                    self.ptr.as_ptr() as *mut u8,
+                    Layout::array::<T>(self.ptr.len()).unwrap(),
+                )
+            };
         }
     }
 }
